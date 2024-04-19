@@ -5,8 +5,8 @@ BASE_PATH=dataset/Megatron-LM
 DATA_PATH=${BASE_PATH}/arxiv_text_document/arxiv_text_document
 DS_CONFIG=ds_config.json
 
-TP=2
-PP=2
+TP=1
+PP=4
 NLAYERS=24
 HIDDEN=1024
 
@@ -36,12 +36,7 @@ cat <<EOT > $DS_CONFIG
     "enabled": true,
     "initial_scale_power": 12
   },
-  "comms_logger": {
-    "enabled": true,
-    "verbose": true,
-    "prof_all": true,
-    "debug": false
-  },
+
   "wall_clock_breakdown" : true
   
 }
@@ -57,8 +52,8 @@ ds_args=" --zero-stage=$ZERO_STAGE ${ds_args}"
 ds_args=" --deepspeed-activation-checkpointing ${ds_args}"
 
 
-deepspeed --hostfile=./hostfile \
-      pretrain_gpt.py \
+deepspeed --no_python --hostfile=./hostfile \
+      /home/ubuntu/Megatron-DeepSpeed/profile.sh \
     --num-workers 2 \
     --tensor-model-parallel-size $TP \
     --pipeline-model-parallel-size $PP \
@@ -71,6 +66,7 @@ deepspeed --hostfile=./hostfile \
     --micro-batch-size $MICRO_BATCH \
     --global-batch-size $GLOBAL_BATCH \
     --train-iters 3 \
+    --no-masked-softmax-fusion \
     --lr 6.0e-5 \
     --min-lr 6.0e-6 \
     --lr-decay-style cosine \

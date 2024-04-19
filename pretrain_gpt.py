@@ -36,50 +36,60 @@ def model_provider(pre_process=True, post_process=True):
 
     args = get_args()
     config = core_transformer_config_from_args(args)
-    with deepspeed.zero.Init(sequence_data_parallel_group=mpu.get_sequence_data_parallel_group(),
-                             remote_device=None if args.remote_device == 'none' else args.remote_device,
-                             config_dict_or_path=args.deepspeed_config_dict,
-                             enabled=args.zero_stage == 3,
-                             mpu=mpu):
-        if args.deepspeed and not args.no_pipeline_parallel:
-            model = GPTModelPipe(
-                config=config,
-                num_tokentypes=0,
-                parallel_output=True
-            )
-            # This is a hack to give us a reference to get_batch_pipe from within training.py
-            # We need to call model.set_batch_fn after deepspeed.initialize
-            model._megatron_batch_fn = get_batch_pipe
+    print_rank_0("init deepspeed zero")
+    import time as pyt
+    pyt.sleep(5)
+    # with deepspeed.zero.Init(sequence_data_parallel_group=mpu.get_sequence_data_parallel_group(),
+    #                          remote_device=None if args.remote_device == 'none' else args.remote_device,
+    #                          config_dict_or_path=args.deepspeed_config_dict,
+    #                          enabled=args.zero_stage == 3,
+    #                          mpu=mpu):
+    if args.deepspeed and not args.no_pipeline_parallel:
+        # model = None
+        model = GPTModelPipe(
+            config=config,
+            num_tokentypes=0,
+            parallel_output=True
+        )
+        # This is a hack to give us a reference to get_batch_pipe from within training.py
+        # We need to call model.set_batch_fn after deepspeed.initialize
+        model._megatron_batch_fn = get_batch_pipe
 
-            # Predompute the attention mask and store it in args. This avoids having to
-            # pipeline it as an activation during training. The mask is constant, and thus
-            # we can reuse it.
-            attention_mask = torch.tril(torch.ones(
-                (1, args.seq_length, args.seq_length), device=get_accelerator().current_device_name())).view(
-                    1, 1, args.seq_length, args.seq_length)
+        # Predompute the attention mask and store it in args. This avoids having to
+        # pipeline it as an activation during training. The mask is constant, and thus
+        # we can reuse it.
+        print("run torch.tril rank", torch.distributed.get_rank())
+        print("args: ", args.seq_length)
+        attention_mask = torch.tril(torch.ones(
+            (1, args.seq_length, args.seq_length), device=get_accelerator().current_device_name())).view(
+                1, 1, args.seq_length, args.seq_length)
+        print("after torch.tril rank", torch.distributed.get_rank())
+        # stop here to see if we get stuck
+        # pyt.sleep(100)
+        # Convert attention mask to binary:
+        attention_mask = (attention_mask < 0.5)
+        if args.fp16:
+            attention_mask = attention_mask.half()
+        elif args.bf16:
+            attention_mask = attention_mask.bfloat16()
 
-            # Convert attention mask to binary:
-            attention_mask = (attention_mask < 0.5)
-            if args.fp16:
-                attention_mask = attention_mask.half()
-            elif args.bf16:
-                attention_mask = attention_mask.bfloat16()
+        # Attention mask must be bool.
+        args.attn_mask = attention_mask.to(torch.bool)
 
-            # Attention mask must be bool.
-            args.attn_mask = attention_mask.to(torch.bool)
+        # For prertaining, since sequence length is fixed, cache rotary embedding in args, to avoid communicating around
+        if args.use_rotary_position_embeddings:
+            update_rotary_pos_emb(args.seq_length)
+        print("after use rotary")
 
-            # For prertaining, since sequence length is fixed, cache rotary embedding in args, to avoid communicating around
-            if args.use_rotary_position_embeddings:
-                update_rotary_pos_emb(args.seq_length)
-
-        else:
-            model = GPTModel(
-                config=config,
-                num_tokentypes=0,
-                parallel_output=True,
-                pre_process=pre_process,
-                post_process=post_process
-            )
+    else:
+        model = GPTModel(
+            config=config,
+            num_tokentypes=0,
+            parallel_output=True,
+            pre_process=pre_process,
+            post_process=post_process
+        )
+    print_rank_0('run see memory usage')
     see_memory_usage(f"After Building Model", force=True)
     return model
 
