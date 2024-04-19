@@ -329,12 +329,14 @@ class GPTModelPipe(PipelineModule,MegatronModule):
         topo = PipeModelDataParallelTopology(num_pp=mpu.get_pipeline_model_parallel_world_size(),
                                              num_mp=mpu.get_tensor_model_parallel_world_size(),
                                              num_dp=mpu.get_data_parallel_world_size())
+        print("rank", torch.distributed.get_rank(), "build model finish 0")
 
         super().__init__(layers=self.specs,
                          loss_fn=CrossEntropy,
                          topology=topo,
                          activation_checkpoint_interval=interval,
                          partition_method='type:transformer')
+        print("rank", torch.distributed.get_rank(), "build model finish 1")
 
     @staticmethod
     def _get_vocab_param_patterns():

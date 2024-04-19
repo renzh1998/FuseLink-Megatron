@@ -201,9 +201,11 @@ class Timers:
         if version.parse(torch.__version__) >= version.parse('1.13'):
             torch.distributed.all_gather_into_tensor(rank_name_to_time.view(-1),
                                            rank_name_to_time[rank, :].view(-1))
+            torch.distributed.barrier()
         else:
             torch.distributed._all_gather_base(rank_name_to_time.view(-1),
                                          rank_name_to_time[rank, :].view(-1))
+            torch.distributed.barrier()
 
         return rank_name_to_time
 
@@ -271,6 +273,7 @@ class Timers:
 
         # Print.
         assert normalizer > 0.0
+        print('log_option', self._log_option)
         if self._log_option in ['max', 'minmax']:
             max_only = False
             if self._log_option == 'max':

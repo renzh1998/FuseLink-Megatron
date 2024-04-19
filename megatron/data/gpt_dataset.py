@@ -480,8 +480,12 @@ def _build_index_mappings(name, data_prefix, documents, sizes,
             data_cache_success = False
 
     counts = get_accelerator().LongTensor([data_cache_success])
+    print("run dist op in index mapping ", torch.distributed.get_rank())
     torch.distributed.all_reduce(counts, group=mpu.get_data_parallel_group())
+    # torch.distributed.barrier()
     torch.distributed.all_reduce(counts, group=mpu.get_pipeline_model_parallel_group())
+    # torch.distributed.barrier()
+    print("counts sync done")
     if counts[0].item() != (
         torch.distributed.get_world_size() //
         torch.distributed.get_world_size(group=mpu.get_tensor_model_parallel_group()) //

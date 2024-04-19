@@ -400,6 +400,7 @@ def validate_args(args, defaults={}):
                 raise RuntimeError(
                     "Using async gradient all reduce requires setting the environment "
                     "variable CUDA_DEVICE_MAX_CONNECTIONS to 1")
+        # pass
 
     # Disable bias gelu fusion if we are disabling bias altogether
     if not args.add_bias_linear:

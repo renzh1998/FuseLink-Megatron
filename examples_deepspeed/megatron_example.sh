@@ -5,8 +5,8 @@ BASE_PATH=dataset/Megatron-LM
 DATA_PATH=${BASE_PATH}/arxiv_text_document/arxiv_text_document
 DS_CONFIG=ds_config.json
 
-TP=2
-PP=2
+TP=1
+PP=4
 NLAYERS=24
 HIDDEN=1024
 
@@ -22,46 +22,23 @@ OUTPUT_DIR=$OUTPUT_PATH/ds_${current_time}_z${ZERO_STAGE}_nl${NLAYERS}_hs${HIDDE
 #OUTPUT_DIR=baseline_nl${NLAYERS}_hs${HIDDEN}_gb${GLOBAL_BATCH}_mb${MICRO_BATCH}
 mkdir -p $OUTPUT_DIR
 
-cat <<EOT > $DS_CONFIG
-{
-  "train_batch_size" : $GLOBAL_BATCH,
-  "train_micro_batch_size_per_gpu": $MICRO_BATCH,
-  "steps_per_print": 1,
+GPUS_PER_NODE=4
+MASTER_ADDR='192.168.1.149'
+MASTER_PORT=6001
+NNODES=2
+NODE_RANK=0
+WORLD_SIZE=$(($GPUS_PER_NODE*$NNODES))
 
-  "zero_optimization": {
-    "stage": $ZERO_STAGE
-  },
+# export NCCL_DEBUG=INFO 
+DISTRIBUTED_ARGS="--nproc_per_node $GPUS_PER_NODE --nnodes $NNODES --node_rank $NODE_RANK --master_addr $MASTER_ADDR --master_port $MASTER_PORT"
 
-  "fp16": {
-    "enabled": true,
-    "initial_scale_power": 12
-  },
-  "comms_logger": {
-    "enabled": true,
-    "verbose": true,
-    "prof_all": true,
-    "debug": false
-  },
-  "wall_clock_breakdown" : true
-  
-}
-EOT
-
-export NCCL_DEBUG=INFO 
-
-ds_args=""
-ds_args=" --deepspeed ${ds_args}"
-#ds_args=" --no-pipeline-parallel ${ds_args}" 
-ds_args=" --deepspeed_config=$DS_CONFIG ${ds_args}"
-ds_args=" --zero-stage=$ZERO_STAGE ${ds_args}"
-ds_args=" --deepspeed-activation-checkpointing ${ds_args}"
-
-
-deepspeed --hostfile=./hostfile \
+python -m torch.distributed.launch $DISTRIBUTED_ARGS \
       pretrain_gpt.py \
     --num-workers 2 \
     --tensor-model-parallel-size $TP \
     --pipeline-model-parallel-size $PP \
+    --no-masked-softmax-fusion \
+    --recompute-method uniform \
     --num-layers $NLAYERS \
     --hidden-size $HIDDEN \
     --num-attention-heads 16 \
@@ -90,6 +67,5 @@ deepspeed --hostfile=./hostfile \
     --fp16 \
     --checkpoint-activations \
     --tensorboard-dir $OUTPUT_DIR \
-    $ds_args \
     --exit-interval 5000 | tee ${OUTPUT_DIR}/output.log
 

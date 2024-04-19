@@ -136,6 +136,7 @@ def pretrain(train_valid_test_dataset_provider,
     start_time_tensor = get_accelerator().DoubleTensor([_TRAIN_START_TIME])
     torch.distributed.all_reduce(start_time_tensor,
                                  op=torch.distributed.ReduceOp.MIN)
+    torch.distributed.barrier()
     _TRAIN_START_TIME = start_time_tensor.item()
     print_rank_0('time to initialize megatron (seconds): {:.3f}'.format(
         time.time() - _TRAIN_START_TIME))
@@ -160,6 +161,7 @@ def pretrain(train_valid_test_dataset_provider,
 
     # Model, optimizer, and learning rate.
     timers('model-and-optimizer-setup', log_level=0).start(barrier=True)
+    print("rank", torch.distributed.get_rank(), "call setup_model_and_optimizer")
     model, optimizer, opt_param_scheduler = setup_model_and_optimizer(
         model_provider, model_type, teacher=False, data_post_process=data_post_process,
         build_train_valid_test_datasets_provider=train_valid_test_dataset_provider)
@@ -210,10 +212,10 @@ def pretrain(train_valid_test_dataset_provider,
         args.teacher_model = setup_teacher_model(args, model_provider)
 
     # Print setup timing.
-    print_rank_0('done with setup ...')
+    print('done with setup ...')
     timers.log(['model-and-optimizer-setup',
                 'train/valid/test-data-iterators-setup'], barrier=True)
-
+    print('done timers log')
     if not args.skip_train:
         print_rank_0('training ...')
 
@@ -324,6 +326,7 @@ def get_model(model_provider_func, model_type=ModelType.encoder_or_decoder, wrap
     # Build model.
     if mpu.get_pipeline_model_parallel_world_size() > 1 and \
        args.virtual_pipeline_model_parallel_size is not None:
+        print_rank_0('branch 0')
         assert model_type != ModelType.encoder_and_decoder, \
             "Interleaved schedule not supported for model with both encoder and decoder"
         model = []
@@ -339,11 +342,13 @@ def get_model(model_provider_func, model_type=ModelType.encoder_or_decoder, wrap
             this_model.model_type = model_type
             model.append(this_model)
     else:
+        print_rank_0('branch 1')
         pre_process = mpu.is_pipeline_first_stage()
         post_process = mpu.is_pipeline_last_stage()
         add_encoder = True
         add_decoder = True
         if model_type == ModelType.encoder_and_decoder:
+            print_rank_0('enc and dec')
             if mpu.get_pipeline_model_parallel_world_size() > 1:
                 assert args.pipeline_model_parallel_split_rank is not None, \
                     "Split rank needs to be specified for model with both encoder and decoder"
@@ -355,19 +360,22 @@ def get_model(model_provider_func, model_type=ModelType.encoder_or_decoder, wrap
                         rank == (world_size - 1))
                 add_encoder = mpu.is_pipeline_stage_before_split()
                 add_decoder = mpu.is_pipeline_stage_after_split()
+            print_rank_0('run model_provider_func') 
             model = model_provider_func(
                 pre_process=pre_process,
                 post_process=post_process,
                 add_encoder=add_encoder,
                 add_decoder=add_decoder)
         else:
+            print_rank_0('not enc and dec')
             model = model_provider_func(
                 pre_process=pre_process,
                 post_process=post_process
             )
+            print("rank ", torch.distributed.get_rank(), "model provider func done")
         model.model_type = model_type
 
-
+    print_rank_0("mpu processing done")
     if not isinstance(model, list):
         model = [model]
 
@@ -521,8 +529,9 @@ def setup_model_and_optimizer(model_provider_func,
                               build_train_valid_test_datasets_provider=None):
     """Setup model and optimizer."""
     args = get_args()
-
+    print("get model rank", torch.distributed.get_rank())
     model = get_model(model_provider_func, model_type)
+    print("get model done rank", torch.distributed.get_rank())
 
     # initialize the compression here
     student_global_steps = 0
@@ -605,6 +614,7 @@ def setup_model_and_optimizer(model_provider_func,
             )
             model.set_data_post_process_func(data_post_process)
         else:
+            print("rank", torch.distributed.get_rank(), "call init deepspeed")
             model, optimizer, _, opt_param_scheduler = deepspeed.initialize(
                 model=model[0],
                 optimizer=optimizer,
@@ -1178,6 +1188,38 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
                     update_rotary_pos_emb(curriculum_seqlen)
             args.curriculum_seqlen = curriculum_seqlen
         args.curr_iteration = iteration
+
+        # current_time = datetime.now()
+        # current_time_str = current_time.strftime("%Y-%m-%d-%H-%M-%S")
+        # if iteration == 1:
+        #     with torch.profiler.profile(
+        #         schedule=torch.profiler.schedule(
+        #             wait=0, # During this phase profiler is not active.
+        #             warmup=0, # During this phase profiler starts tracing, but the results are discarded.
+        #             active=1, # During this phase profiler traces and records data.
+        #             repeat=1), # Specifies an upper bound on the number of cycles.
+        #         # ./log/2021-08-11-16-00-00/rank0/
+        #         on_trace_ready=torch.profiler.tensorboard_trace_handler('./trace_log/' + current_time_str + '/rank' + str(torch.distributed.get_rank())),
+        #         activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA], 
+        #         record_shapes=True,
+        #         with_stack=True # Enable stack tracing, adds extra profiling overhead.
+        #     ) as profiler:
+        #         loss_dict, skipped_iter, grad_norm, num_zeros_in_grad = \
+        #             train_step(forward_step_func,
+        #                     train_data_iterator,
+        #                     model,
+        #                     optimizer,
+        #                     opt_param_scheduler,
+        #                     config)
+        #         profiler.step()
+        # else:
+        #     loss_dict, skipped_iter, grad_norm, num_zeros_in_grad = \
+        #             train_step(forward_step_func,
+        #                     train_data_iterator,
+        #                     model,
+        #                     optimizer,
+        #                     opt_param_scheduler,
+        #                     config)
         loss_dict, skipped_iter, grad_norm, num_zeros_in_grad = \
             train_step(forward_step_func,
                        train_data_iterator,
@@ -1494,10 +1536,12 @@ def build_train_valid_test_data_loaders(
     rank_in_parallel_group = mpu.get_sequence_parallel_rank() if ds_sequence_parallel else mpu.get_tensor_model_parallel_rank()
     if rank_in_parallel_group == 0:
         # Build datasets.
+        print("build datasets")
         train_ds, valid_ds, test_ds = build_train_valid_test_datasets(
             build_train_valid_test_datasets_provider)
-
+        print("after building datasets ", torch.distributed.get_rank())
         # Build dataloders.
+        print("build data loaders")
         train_dataloader = build_pretraining_data_loader(
             train_ds, args.consumed_train_samples)
         valid_dataloader = build_pretraining_data_loader(
@@ -1513,19 +1557,26 @@ def build_train_valid_test_data_loaders(
             [int(do_train), int(do_valid), int(do_test)])
     else:
         flags = get_accelerator().LongTensor([0, 0, 0])
-
+    print("before broadcasting barrier ", torch.distributed.get_rank())
+    dist.barrier()
+    print("before broadcasting num tokens ", torch.distributed.get_rank())
     # Broadcast num tokens.
     if ds_sequence_parallel:
         torch.distributed.broadcast(flags,
                                     mpu.get_sequence_parallel_src_rank(),
                                     group=mpu.get_sequence_parallel_group())
+        dist.barrier()
     else:
+        print("before", torch.distributed.get_rank())
         torch.distributed.broadcast(flags,
                                     mpu.get_tensor_model_parallel_src_rank(),
                                     group=mpu.get_tensor_model_parallel_group())
+        dist.barrier()
     args.do_train = flags[0].item()
     args.do_valid = flags[1].item()
     args.do_test = flags[2].item()
+    dist.barrier()
+    print("rank", dist.get_rank(), "data loader done")
 
     return train_dataloader, valid_dataloader, test_dataloader
 

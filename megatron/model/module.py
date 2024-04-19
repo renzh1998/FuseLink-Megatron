@@ -135,7 +135,7 @@ def fp32_to_float16(val, float16_convertor):
         val_typecheck = val
         if isinstance(val_typecheck, (Parameter, Variable)):
             val_typecheck = val.data
-        if isinstance(val_typecheck, _FLOAT_TYPES):
+        if isinstance(val_typecheck, type(_FLOAT_TYPES)):
             val = float16_convertor(val)
         return val
     return conversion_helper(val, half_conversion)
@@ -147,7 +147,7 @@ def float16_to_fp32(val):
         val_typecheck = val
         if isinstance(val_typecheck, (Parameter, Variable)):
             val_typecheck = val.data
-        if isinstance(val_typecheck, (_BF16_TYPES, _HALF_TYPES)):
+        if isinstance(val_typecheck, (type(_BF16_TYPES), type(_HALF_TYPES))):
             val = val.float()
         return val
     return conversion_helper(val, float_conversion)
